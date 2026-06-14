@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { BottomNav } from "@/components/bottom-nav";
+import { Sidebar, BottomNav } from "@/components/app-nav";
 
 /**
- * Shell for all signed-in routes: mobile-first column with a sticky bottom nav.
- * Auth is enforced in middleware; this is a defense-in-depth check.
+ * Shell for all signed-in routes. Mobile: single column + sticky bottom nav.
+ * Desktop (md+): left sidebar + a wider, centered content area.
+ * Auth is enforced in the proxy; this is a defense-in-depth check.
  */
 export default async function AppLayout({
   children,
@@ -19,9 +20,14 @@ export default async function AppLayout({
   if (!user) redirect("/login");
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col">
-      <main className="flex-1 px-4 pb-4 pt-6">{children}</main>
-      <BottomNav />
+    <div className="flex min-h-dvh">
+      <Sidebar />
+      <div className="flex flex-1 flex-col">
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-8">
+          {children}
+        </main>
+        <BottomNav />
+      </div>
     </div>
   );
 }

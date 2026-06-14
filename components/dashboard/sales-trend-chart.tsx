@@ -22,14 +22,14 @@ export function SalesTrendChart({
   }));
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           Last 30 days
         </CardTitle>
       </CardHeader>
-      <CardContent className="h-48 px-1">
-        <ResponsiveContainer width="100%" height="100%">
+      <CardContent className="px-1">
+        <ResponsiveContainer width="100%" height={180}>
           <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
             <defs>
               <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">

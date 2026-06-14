@@ -69,7 +69,7 @@ export function KpiCards({
   monthPrev: number;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
       <KpiCard label="Today" sub="vs yesterday" totals={today} prevTotal={todayPrev} />
       <KpiCard label="This week" sub="vs prior 7 days" totals={week} prevTotal={weekPrev} />
       <KpiCard label="This month" sub="vs same days last month" totals={month} prevTotal={monthPrev} />

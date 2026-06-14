@@ -20,19 +20,19 @@ export function ChannelMixChart({ totals }: { totals: ChannelTotals }) {
   })).filter((d) => d.value > 0);
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           Channel mix (this month)
         </CardTitle>
       </CardHeader>
-      <CardContent className="h-48">
+      <CardContent>
         {data.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">
             No sales yet this month
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height={180}>
             <PieChart>
               <Pie
                 data={data}

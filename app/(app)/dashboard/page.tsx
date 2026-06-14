@@ -84,8 +84,10 @@ export default async function DashboardPage({
         monthPrev={data.monthPrev}
       />
 
-      <SalesTrendChart data={data.trend} />
-      <ChannelMixChart totals={data.channelMix} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <SalesTrendChart data={data.trend} />
+        <ChannelMixChart totals={data.channelMix} />
+      </div>
 
       <section className="space-y-2">
         <div className="flex items-center justify-between">
