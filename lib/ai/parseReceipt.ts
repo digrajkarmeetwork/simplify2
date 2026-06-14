@@ -1,72 +1,80 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import sharp from "sharp";
 import * as z from "zod/v4";
-import type { ConnectorInput, ParsedReceipt } from "@/lib/connectors/types";
+import type {
+  Channel,
+  ConnectorInput,
+  ParsedReceipt,
+  ReceiptType,
+} from "@/lib/connectors/types";
 
-// Schema built with zod/v4 to match the SDK's zodOutputFormat helper.
+// Receipts stay legible at ~1568px; this keeps Claude image tokens ~3x lower
+// than a full-size phone photo. Auto-orient first (WhatsApp EXIF rotation).
+async function downscaleForOcr(bytes: Buffer): Promise<Buffer> {
+  try {
+    return await sharp(bytes)
+      .rotate()
+      .resize({ width: 1568, height: 1568, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer();
+  } catch {
+    return bytes; // if sharp can't handle it, fall back to the original
+  }
+}
+
+// Minimal schema = minimal output tokens. We extract raw fields and derive the
+// channel in code (deterministic) rather than asking the model to apply the rule.
 const ReceiptSchema = z.object({
-  receipt_type: z.enum(["pizzaville", "uber_eats", "skip_dishes", "unknown"]),
-  business_identifier: z
+  receipt_type: z.enum([
+    "pizzaville_daily",
+    "uber_eats",
+    "skip_dishes",
+    "unknown",
+  ]),
+  store_identifier: z
     .string()
-    .describe("Store name, address, or number printed on the receipt"),
-  entry_date: z.string().describe("Business date on the receipt as YYYY-MM-DD"),
-  line_items: z.array(
-    z.object({
-      channel: z.enum(["in_store", "call_center", "uber_eats", "skip_dishes"]),
-      amount: z.number().describe("Total sales for this channel, as a number"),
-    }),
-  ),
-  confidence: z
+    .describe("Store number/address on the 'Store:' line, e.g. '0154'"),
+  entry_date: z.string().describe("Receipt date as YYYY-MM-DD"),
+  total_sales: z
     .number()
-    .describe("0..1 — set low when digits are smudged or unreadable"),
-  raw_text: z.string().describe("All text read off the image, for audit"),
+    .describe("The number on the 'Total Sales' line (incl. tax)"),
+  total_deliveries: z
+    .number()
+    .nullable()
+    .describe("Integer on the 'Total Deliveries' line; null if not present"),
+  confidence: z.number().describe("0..1; below 0.6 if any digit is unclear"),
 });
 
-const PARSE_PROMPT = `You are extracting daily sales totals from a photographed receipt or a delivery-app summary screenshot for a pizza restaurant.
+const PARSE_PROMPT = `Read this daily sales report image and extract a few fields.
 
-There are three possible layouts:
-1. A Pizzaville daily receipt (thermal print) — it shows IN-STORE and CALL-CENTER totals, and sometimes a store name/number/address.
-2. An Uber Eats sales summary screenshot.
-3. A Skip the Dishes sales summary screenshot.
+It is usually a Pizzaville "Daily Results" POS receipt:
+- Header "Daily Results" with a date like "Sat Jun 13/2026".
+- Lines for "Total Pickups", "Total Deliveries", then sales lines ending with "Total Sales <amount>".
+- total_sales = the number on the "Total Sales" line (the final total, including HST). Plain number, no $ or commas (e.g. 1537.62).
+- total_deliveries = the integer on the "Total Deliveries" line.
+- entry_date = the date in the "Daily Results" header, formatted YYYY-MM-DD.
+- store_identifier = the value after "Store:" (e.g. "0154").
+- receipt_type = "pizzaville_daily".
 
-Rules:
-- Set receipt_type to the layout you see (or "unknown").
-- Put one line_item per sales channel you can read. For a Pizzaville receipt that is in_store and call_center; for Uber/Skip screenshots it is uber_eats / skip_dishes.
-- amount is the day's total for that channel as a plain number (no currency symbol or thousands separators).
-- entry_date is the business date printed on the document, formatted YYYY-MM-DD. If only month/day is shown, use the current year.
-- business_identifier is whatever names the location (store name, number, or address). Empty string if none is visible.
-- The image may have glare, smudges, or thermal fading. Read carefully. If any digit of an amount is genuinely unreadable, still return your best estimate but set confidence low (< 0.6).
-- raw_text: transcribe all legible text.`;
+If instead it's an Uber Eats or Skip the Dishes daily summary, set receipt_type to "uber_eats" or "skip_dishes", put the day's total in total_sales, total_deliveries = null, and the date in entry_date.
 
-const ALLOWED_MEDIA = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-]);
-
-function normalizeMediaType(
-  mediaType: string,
-): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
-  const t = mediaType.toLowerCase();
-  if (ALLOWED_MEDIA.has(t))
-    return t as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-  return "image/jpeg"; // WhatsApp photos are JPEG; safe default
-}
+If unreadable, receipt_type = "unknown". Set confidence below 0.6 if any digit of total_sales is uncertain. Return only the fields.`;
 
 const client = new Anthropic();
 
 /**
- * Parse a receipt image into structured sales data with Claude vision.
- * Uses structured outputs (not a forced tool) — see docs/PLAN.md → AI Parsing.
- * Do not downscale the image; resolution is what saves smudged thermal digits.
+ * Parse a daily-results receipt/summary image into structured sales data.
+ * Channel is derived here: a Pizzaville receipt with deliveries is the
+ * call-center report; with no deliveries it's the in-store report.
  */
 export async function parseReceipt(
   input: ConnectorInput,
 ): Promise<ParsedReceipt> {
+  const jpeg = await downscaleForOcr(input.imageBytes);
   const res = await client.messages.parse({
     model: process.env.PARSER_MODEL ?? "claude-opus-4-8",
-    max_tokens: 2000,
+    max_tokens: 400,
     output_config: { format: zodOutputFormat(ReceiptSchema) },
     messages: [
       {
@@ -76,8 +84,8 @@ export async function parseReceipt(
             type: "image",
             source: {
               type: "base64",
-              media_type: normalizeMediaType(input.mediaType),
-              data: input.imageBytes.toString("base64"),
+              media_type: "image/jpeg",
+              data: jpeg.toString("base64"),
             },
           },
           { type: "text", text: PARSE_PROMPT },
@@ -86,11 +94,45 @@ export async function parseReceipt(
     ],
   });
 
-  if (res.stop_reason === "refusal") {
-    throw new Error("parser_refused");
+  if (res.stop_reason === "refusal") throw new Error("parser_refused");
+  const out = res.parsed_output;
+  if (!out) throw new Error(`parser_no_output (stop_reason=${res.stop_reason})`);
+
+  const receiptType: ReceiptType =
+    out.receipt_type === "pizzaville_daily" ? "pizzaville" : out.receipt_type;
+
+  const line_items = toLineItems(out.receipt_type, out.total_sales, out.total_deliveries);
+
+  return {
+    receipt_type: receiptType,
+    business_identifier: out.store_identifier,
+    entry_date: out.entry_date,
+    line_items,
+    confidence: out.confidence,
+    extracted: {
+      total_sales: out.total_sales,
+      total_deliveries: out.total_deliveries,
+    },
+  };
+}
+
+function toLineItems(
+  type: string,
+  totalSales: number,
+  totalDeliveries: number | null,
+): { channel: Channel; amount: number }[] {
+  switch (type) {
+    case "pizzaville_daily": {
+      // Deliveries present -> call-center report; none -> in-store report.
+      const channel: Channel =
+        (totalDeliveries ?? 0) > 0 ? "call_center" : "in_store";
+      return [{ channel, amount: totalSales }];
+    }
+    case "uber_eats":
+      return [{ channel: "uber_eats", amount: totalSales }];
+    case "skip_dishes":
+      return [{ channel: "skip_dishes", amount: totalSales }];
+    default:
+      return [];
   }
-  if (!res.parsed_output) {
-    throw new Error(`parser_no_output (stop_reason=${res.stop_reason})`);
-  }
-  return res.parsed_output;
 }

@@ -14,7 +14,7 @@ export interface ParsedReceipt {
   entry_date: string; // ISO date as read off the receipt
   line_items: { channel: Channel; amount: number }[];
   confidence: number; // 0..1
-  raw_text: string;
+  extracted?: Record<string, unknown>; // raw fields kept for audit
 }
 
 /** Raw input a connector turns into a ParsedReceipt. */
