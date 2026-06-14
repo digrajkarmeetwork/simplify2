@@ -3,8 +3,12 @@ import { whatsappImageConnector } from "@/lib/connectors/whatsappImage";
 import { getMediaBytes, storeReceiptImage } from "@/lib/whatsapp/media";
 import { sendText } from "@/lib/whatsapp/send";
 import { resolveSenderUser, matchBusiness } from "@/lib/ingest/routing";
+import { setPending, getPending, clearPending } from "@/lib/ingest/conversation";
+import { parseChannelAmount } from "@/lib/ingest/parseText";
 import type { Channel, ParsedReceipt } from "@/lib/connectors/types";
 import type { WhatsAppInboundMessage } from "@/lib/whatsapp/types";
+
+type Supa = ReturnType<typeof createAdminClient>;
 
 const CONFIDENCE_THRESHOLD = 0.7;
 
@@ -24,82 +28,221 @@ export async function processMessage(
 ): Promise<void> {
   const supabase = createAdminClient();
 
-  // 1. Idempotency: first writer wins. A unique-violation here means we've
-  //    already seen this message id, so this delivery is a no-op.
+  // Idempotency: first writer wins; a unique violation = already processed.
   const { error: dupErr } = await supabase.from("whatsapp_messages").insert({
     wam_id: msg.id,
     sender: msg.from,
     media_id: msg.image?.id ?? null,
     status: "received",
   });
-  if (dupErr) return; // duplicate (or transient) — do not double-process
+  if (dupErr) return;
 
-  // 2. Only image messages carry receipts in v1. Text replies (EDIT / store
-  //    selection) are handled in Phase 3.
-  if (msg.type !== "image" || !msg.image) {
-    await mark(supabase, msg.id, "ignored_non_image");
+  // Only whitelisted senders are processed; unknown numbers are ignored silently.
+  const userId = await resolveSenderUser(msg.from);
+  if (!userId) {
+    await mark(supabase, msg.id, "unknown_sender");
     return;
   }
 
   try {
-    // 3. Download + persist the image.
-    const { bytes, mediaType } = await getMediaBytes(msg.image.id);
-    const imageUrl = await storeReceiptImage(bytes, mediaType, msg.id);
-
-    // 4. Parse with Claude vision.
-    const parsed = await whatsappImageConnector.parse({ imageBytes: bytes, mediaType });
-
-    // 5. Route: sender -> user, identifier -> business.
-    const userId = await resolveSenderUser(msg.from);
-    if (!userId) {
-      // Unknown sender: ignore silently (no reply to non-whitelisted numbers).
-      await mark(supabase, msg.id, "unknown_sender");
-      return;
+    if (msg.type === "image" && msg.image) {
+      await handleImage(supabase, msg, userId);
+    } else if (msg.type === "text" && msg.text?.body) {
+      await handleText(supabase, msg, userId, msg.text.body.trim());
+    } else {
+      await mark(supabase, msg.id, "ignored_unsupported");
     }
-
-    const match = await matchBusiness(userId, parsed.business_identifier);
-    if (match.kind === "none") {
-      await sendText(msg.from, "No business is set up yet. Add one in Simplify2 first, then resend the receipt.");
-      await mark(supabase, msg.id, "no_business");
-      return;
-    }
-    if (match.kind === "ambiguous") {
-      // Full disambiguation is Phase 3; for now ask the owner to retry once set.
-      const list = match.options.map((o, i) => `${i + 1}) ${o.name}`).join("  ");
-      await sendText(msg.from, `Which store is this for? ${list}\n(Reply support coming soon — tag the receipt's store keyword for now.)`);
-      await mark(supabase, msg.id, "ambiguous_business");
-      return;
-    }
-
-    // 6. Upsert one entry per channel (idempotent on business/date/channel).
-    const status =
-      parsed.confidence >= CONFIDENCE_THRESHOLD ? "confirmed" : "needs_review";
-    const now = new Date().toISOString();
-    const rows = parsed.line_items.map((li) => ({
-      business_id: match.businessId,
-      entry_date: parsed.entry_date,
-      channel: li.channel,
-      amount: li.amount,
-      source: "whatsapp_ai" as const,
-      confidence: parsed.confidence,
-      status,
-      image_url: imageUrl,
-      raw_extraction: parsed,
-      updated_at: now,
-    }));
-
-    const { error: upErr } = await supabase
-      .from("sales_entries")
-      .upsert(rows, { onConflict: "business_id,entry_date,channel" });
-    if (upErr) throw upErr;
-
-    // 7. Confirmation reply.
-    await sendText(msg.from, confirmationText(match.businessName, parsed, status));
-    await mark(supabase, msg.id, "processed");
   } catch (err) {
     console.error(`processMessage failed for ${msg.id}:`, err);
     await mark(supabase, msg.id, "error", String(err));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Image: download -> parse -> route -> upsert (or ask which store)
+// ---------------------------------------------------------------------------
+async function handleImage(
+  supabase: Supa,
+  msg: WhatsAppInboundMessage,
+  userId: string,
+): Promise<void> {
+  const { bytes, mediaType } = await getMediaBytes(msg.image!.id);
+  const imageUrl = await storeReceiptImage(bytes, mediaType, msg.id);
+  const parsed = await whatsappImageConnector.parse({ imageBytes: bytes, mediaType });
+
+  const match = await matchBusiness(userId, parsed.business_identifier);
+
+  if (match.kind === "none") {
+    await sendText(msg.from, "No business is set up yet. Add one in Simplify2, then resend the receipt.");
+    await mark(supabase, msg.id, "no_business");
+    return;
+  }
+
+  if (match.kind === "ambiguous") {
+    // Hold the parsed receipt + image and ask which store (resolved by text reply).
+    await setPending(msg.from, "pick_business", {
+      receipt: parsed,
+      imageUrl,
+      candidates: match.options,
+    });
+    const list = match.options.map((o, i) => `${i + 1}) ${o.name}`).join("\n");
+    await sendText(msg.from, `Which store is this for? Reply with a number:\n${list}`);
+    await mark(supabase, msg.id, "awaiting_store_pick");
+    return;
+  }
+
+  const status = await upsertReceipt(supabase, match.businessId, parsed, imageUrl);
+  await sendText(msg.from, confirmationText(match.businessName, parsed, status));
+  await mark(supabase, msg.id, "processed");
+}
+
+// ---------------------------------------------------------------------------
+// Text: store-pick reply, or EDIT correction
+// ---------------------------------------------------------------------------
+async function handleText(
+  supabase: Supa,
+  msg: WhatsAppInboundMessage,
+  userId: string,
+  body: string,
+): Promise<void> {
+  const pending = await getPending(msg.from);
+
+  // 1. Resolving a "which store?" prompt.
+  if (pending?.action === "pick_business") {
+    const candidates = (pending.options.candidates ?? []) as { id: string; name: string }[];
+    const idx = Number(body.replace(/[^0-9]/g, "")) - 1;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= candidates.length) {
+      await sendText(msg.from, `Please reply with a number between 1 and ${candidates.length}.`);
+      await mark(supabase, msg.id, "awaiting_store_pick");
+      return;
+    }
+    const chosen = candidates[idx];
+    const receipt = pending.options.receipt as ParsedReceipt;
+    const imageUrl = (pending.options.imageUrl as string | undefined) ?? null;
+    const status = await upsertReceipt(supabase, chosen.id, receipt, imageUrl);
+    await clearPending(msg.from);
+    await sendText(msg.from, confirmationText(chosen.name, receipt, status));
+    await mark(supabase, msg.id, "store_picked");
+    return;
+  }
+
+  const upper = body.toUpperCase();
+
+  // 2. "EDIT" — start, or apply inline "EDIT in_store 950".
+  if (upper === "EDIT" || upper.startsWith("EDIT ")) {
+    const rest = body.slice(4).trim();
+    const parsedEdit = parseChannelAmount(rest);
+    const last = await lastEntryContext(supabase, userId);
+    if (!last) {
+      await sendText(msg.from, "Nothing to edit yet — send a receipt first.");
+      await mark(supabase, msg.id, "edit_nothing");
+      return;
+    }
+    if (parsedEdit) {
+      await applyCorrection(supabase, last.business_id, last.entry_date, parsedEdit.channel, parsedEdit.amount);
+      await sendText(msg.from, `Updated ✅ ${CHANNEL_LABEL[parsedEdit.channel]} ${last.entry_date} = $${parsedEdit.amount.toFixed(2)}`);
+      await mark(supabase, msg.id, "edited");
+      return;
+    }
+    await setPending(msg.from, "edit", { businessId: last.business_id, entryDate: last.entry_date });
+    await sendText(msg.from, `Editing ${last.entry_date}. Reply with: <channel> <amount>\ne.g. "in_store 950" or "call_center 420"`);
+    await mark(supabase, msg.id, "edit_started");
+    return;
+  }
+
+  // 3. Continuing an EDIT.
+  if (pending?.action === "edit") {
+    const parsedEdit = parseChannelAmount(body);
+    if (!parsedEdit) {
+      await sendText(msg.from, `Format: <channel> <amount> — e.g. "in_store 950".`);
+      await mark(supabase, msg.id, "edit_retry");
+      return;
+    }
+    const businessId = pending.options.businessId as string;
+    const entryDate = pending.options.entryDate as string;
+    await applyCorrection(supabase, businessId, entryDate, parsedEdit.channel, parsedEdit.amount);
+    await clearPending(msg.from);
+    await sendText(msg.from, `Updated ✅ ${CHANNEL_LABEL[parsedEdit.channel]} ${entryDate} = $${parsedEdit.amount.toFixed(2)}`);
+    await mark(supabase, msg.id, "edited");
+    return;
+  }
+
+  // 4. Anything else.
+  await sendText(msg.from, "Send a photo of the daily receipt, or reply EDIT to fix the last one.");
+  await mark(supabase, msg.id, "ignored_text");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+async function upsertReceipt(
+  supabase: Supa,
+  businessId: string,
+  parsed: ParsedReceipt,
+  imageUrl: string | null,
+): Promise<"confirmed" | "needs_review"> {
+  const status =
+    parsed.confidence >= CONFIDENCE_THRESHOLD ? "confirmed" : "needs_review";
+  const now = new Date().toISOString();
+  const rows = parsed.line_items.map((li) => ({
+    business_id: businessId,
+    entry_date: parsed.entry_date,
+    channel: li.channel,
+    amount: li.amount,
+    source: "whatsapp_ai" as const,
+    confidence: parsed.confidence,
+    status,
+    image_url: imageUrl,
+    raw_extraction: parsed,
+    updated_at: now,
+  }));
+  const { error } = await supabase
+    .from("sales_entries")
+    .upsert(rows, { onConflict: "business_id,entry_date,channel" });
+  if (error) throw error;
+  return status;
+}
+
+async function applyCorrection(
+  supabase: Supa,
+  businessId: string,
+  entryDate: string,
+  channel: Channel,
+  amount: number,
+): Promise<void> {
+  const { error } = await supabase.from("sales_entries").upsert(
+    {
+      business_id: businessId,
+      entry_date: entryDate,
+      channel,
+      amount,
+      source: "manual",
+      status: "confirmed",
+      confidence: 1,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "business_id,entry_date,channel" },
+  );
+  if (error) throw error;
+}
+
+/** Most recent entry across the user's businesses — the target for "EDIT". */
+async function lastEntryContext(
+  supabase: Supa,
+  userId: string,
+): Promise<{ business_id: string; entry_date: string } | null> {
+  const { data } = await supabase
+    .from("sales_entries")
+    .select("business_id, entry_date, businesses!inner(owner_id)")
+    .eq("businesses.owner_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    business_id: data.business_id as string,
+    entry_date: data.entry_date as string,
+  };
 }
 
 function confirmationText(
@@ -117,7 +260,7 @@ function confirmationText(
 }
 
 async function mark(
-  supabase: ReturnType<typeof createAdminClient>,
+  supabase: Supa,
   wamId: string,
   status: string,
   error?: string,

@@ -50,5 +50,29 @@ export async function upsertManualEntry(
 
   if (error) return { ok: false, error: error.message };
   revalidatePath("/dashboard");
+  revalidatePath("/review");
+  return { ok: true };
+}
+
+/**
+ * Confirm a low-confidence entry as-is (no amount change), clearing it from the
+ * review queue. RLS ensures the caller owns the business.
+ */
+export async function confirmEntry(
+  businessId: string,
+  entryDate: string,
+  channel: Channel,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("sales_entries")
+    .update({ status: "confirmed", updated_at: new Date().toISOString() })
+    .eq("business_id", businessId)
+    .eq("entry_date", entryDate)
+    .eq("channel", channel);
+
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/dashboard");
+  revalidatePath("/review");
   return { ok: true };
 }
