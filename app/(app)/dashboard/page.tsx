@@ -65,6 +65,7 @@ export default async function DashboardPage({
   ]);
 
   const q = (mm: string) => `/dashboard?b=${current}&m=${mm}`;
+  const period = `${year}-${String(month).padStart(2, "0")}`;
 
   return (
     <div className="space-y-5">
@@ -94,21 +95,37 @@ export default async function DashboardPage({
           <h2 className="text-sm font-medium text-muted-foreground">
             {MONTHS[month - 1]} {year}
           </h2>
-          <div className="flex gap-1 text-sm">
-            <Link
-              href={q(shiftMonth(year, month, -1))}
-              className="rounded border px-2 py-1 hover:bg-muted"
-              aria-label="Previous month"
-            >
-              ‹
-            </Link>
-            <Link
-              href={q(shiftMonth(year, month, 1))}
-              className="rounded border px-2 py-1 hover:bg-muted"
-              aria-label="Next month"
-            >
-              ›
-            </Link>
+          <div className="flex items-center gap-3">
+            <div className="flex gap-2 text-xs">
+              <a
+                href={`/api/export?b=${current}&m=${period}&format=xlsx`}
+                className="rounded border px-2 py-1 hover:bg-muted"
+              >
+                Excel
+              </a>
+              <a
+                href={`/api/export?b=${current}&m=${period}&format=pdf`}
+                className="rounded border px-2 py-1 hover:bg-muted"
+              >
+                PDF
+              </a>
+            </div>
+            <div className="flex gap-1 text-sm">
+              <Link
+                href={q(shiftMonth(year, month, -1))}
+                className="rounded border px-2 py-1 hover:bg-muted"
+                aria-label="Previous month"
+              >
+                ‹
+              </Link>
+              <Link
+                href={q(shiftMonth(year, month, 1))}
+                className="rounded border px-2 py-1 hover:bg-muted"
+                aria-label="Next month"
+              >
+                ›
+              </Link>
+            </div>
           </div>
         </div>
         <MonthlyTable businessId={current} matrix={matrix} />
