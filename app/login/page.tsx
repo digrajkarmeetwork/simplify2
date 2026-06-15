@@ -4,6 +4,7 @@ import { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { HashSessionHandler } from "@/components/hash-session-handler";
 
 function siteUrl() {
   return (
@@ -46,6 +47,7 @@ function LoginForm() {
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-8 px-6">
+      <HashSessionHandler />
       <div className="space-y-2 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">Simplify2</h1>
         <p className="text-sm text-muted-foreground">
