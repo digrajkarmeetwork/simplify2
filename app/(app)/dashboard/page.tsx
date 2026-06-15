@@ -91,41 +91,37 @@ export default async function DashboardPage({
       </div>
 
       <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-muted-foreground">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-medium text-muted-foreground">
             {MONTHS[month - 1]} {year}
           </h2>
-          <div className="flex items-center gap-3">
-            <div className="flex gap-2 text-xs">
-              <a
-                href={`/api/export?b=${current}&m=${period}&format=xlsx`}
-                className="rounded border px-2 py-1 hover:bg-muted"
-              >
-                Excel
-              </a>
-              <a
-                href={`/api/export?b=${current}&m=${period}&format=pdf`}
-                className="rounded border px-2 py-1 hover:bg-muted"
-              >
-                PDF
-              </a>
-            </div>
-            <div className="flex gap-1 text-sm">
-              <Link
-                href={q(shiftMonth(year, month, -1))}
-                className="rounded border px-2 py-1 hover:bg-muted"
-                aria-label="Previous month"
-              >
-                ‹
-              </Link>
-              <Link
-                href={q(shiftMonth(year, month, 1))}
-                className="rounded border px-2 py-1 hover:bg-muted"
-                aria-label="Next month"
-              >
-                ›
-              </Link>
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={`/api/export?b=${current}&m=${period}&format=xlsx`}
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted active:bg-muted"
+            >
+              Excel
+            </a>
+            <a
+              href={`/api/export?b=${current}&m=${period}&format=pdf`}
+              className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted active:bg-muted"
+            >
+              PDF
+            </a>
+            <Link
+              href={q(shiftMonth(year, month, -1))}
+              className="inline-flex size-10 items-center justify-center rounded-md border text-xl leading-none hover:bg-muted active:bg-muted"
+              aria-label="Previous month"
+            >
+              ‹
+            </Link>
+            <Link
+              href={q(shiftMonth(year, month, 1))}
+              className="inline-flex size-10 items-center justify-center rounded-md border text-xl leading-none hover:bg-muted active:bg-muted"
+              aria-label="Next month"
+            >
+              ›
+            </Link>
           </div>
         </div>
         <MonthlyTable businessId={current} matrix={matrix} />
