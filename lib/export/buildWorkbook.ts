@@ -1,16 +1,18 @@
 import * as XLSX from "xlsx";
 import type { MonthMatrix } from "@/lib/sales-shared";
 import { monthLabel } from "@/lib/export/monthLabel";
+import { weekdayShort } from "@/lib/dates";
 
 /** Build an .xlsx workbook of a month's sales, mirroring the manual sheet. */
 export function buildWorkbook(matrix: MonthMatrix, businessName: string): Buffer {
   const title = `${businessName} — ${monthLabel(matrix.year, matrix.month)}`;
-  const header = ["Day", "In-store", "Call-center", "Uber Eats", "Skip", "Total"];
+  const header = ["Day", "Date", "In-store", "Call-center", "Uber Eats", "Skip", "Total"];
 
   const cell = (closed: boolean, v: number | null) =>
     closed ? "closed" : v === null ? "" : v;
 
   const body = matrix.rows.map((r) => [
+    weekdayShort(r.date),
     r.day,
     cell(r.isClosed, r.in_store),
     cell(r.isClosed, r.call_center),
@@ -21,6 +23,7 @@ export function buildWorkbook(matrix: MonthMatrix, businessName: string): Buffer
 
   const totals = [
     "Total",
+    "",
     matrix.totals.in_store,
     matrix.totals.call_center,
     matrix.totals.uber_eats,
@@ -31,6 +34,7 @@ export function buildWorkbook(matrix: MonthMatrix, businessName: string): Buffer
   const aoa = [[title], [], header, ...body, [], totals];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = [
+    { wch: 6 },
     { wch: 6 },
     { wch: 12 },
     { wch: 12 },

@@ -9,6 +9,7 @@ import {
 import type { MonthMatrix } from "@/lib/sales-shared";
 import { monthLabel } from "@/lib/export/monthLabel";
 import { money2 } from "@/lib/format";
+import { weekdayShort } from "@/lib/dates";
 
 const styles = StyleSheet.create({
   page: { padding: 28, fontSize: 9, fontFamily: "Helvetica" },
@@ -27,9 +28,9 @@ const styles = StyleSheet.create({
     borderColor: "#333",
     fontFamily: "Helvetica-Bold",
   },
-  cDay: { width: "10%", padding: 4 },
-  cNum: { width: "18%", padding: 4, textAlign: "right" },
-  cTot: { width: "18%", padding: 4, textAlign: "right" },
+  cDay: { width: "15%", padding: 4 },
+  cNum: { width: "17%", padding: 4, textAlign: "right" },
+  cTot: { width: "17%", padding: 4, textAlign: "right" },
   closed: { color: "#999" },
 });
 
@@ -64,7 +65,9 @@ function ReportDoc({
 
         {matrix.rows.map((r) => (
           <View style={styles.row} key={r.date}>
-            <Text style={styles.cDay}>{r.day}</Text>
+            <Text style={styles.cDay}>
+              {weekdayShort(r.date)} {r.day}
+            </Text>
             <Text style={r.isClosed ? [styles.cNum, styles.closed] : styles.cNum}>
               {num(r.isClosed, r.in_store)}
             </Text>

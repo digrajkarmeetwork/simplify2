@@ -16,6 +16,7 @@ import { money2 } from "@/lib/format";
 import { upsertManualEntry } from "@/lib/actions/entries";
 import { CHANNELS, CHANNEL_LABEL, type MonthMatrix } from "@/lib/sales-shared";
 import type { Channel } from "@/lib/connectors/types";
+import { weekdayShort } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 
 function EditableCell({
@@ -97,8 +98,11 @@ export function MonthlyTable({
               key={row.date}
               className={cn(row.isClosed && "text-muted-foreground")}
             >
-              <TableCell className="font-medium">
-                <span className="inline-flex items-center gap-1">
+              <TableCell className="font-medium whitespace-nowrap">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">
+                    {weekdayShort(row.date)}
+                  </span>
                   {row.day}
                   {row.needsReview && (
                     <span

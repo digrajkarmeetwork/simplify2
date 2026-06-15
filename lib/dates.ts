@@ -33,3 +33,10 @@ export function daysInMonth(year: number, month1: number): number {
 export function today(): Date {
   return parseYmd(ymd(new Date()));
 }
+
+const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Short weekday for a YYYY-MM-DD date, e.g. "Sat". */
+export function weekdayShort(ymdStr: string): string {
+  return WEEKDAYS_SHORT[parseYmd(ymdStr).getUTCDay()];
+}
