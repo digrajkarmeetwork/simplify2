@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import sharp from "sharp";
 import * as z from "zod/v4";
 import type {
   Channel,
@@ -9,17 +8,39 @@ import type {
   ReceiptType,
 } from "@/lib/connectors/types";
 
-// Receipts stay legible at ~1568px; this keeps Claude image tokens ~3x lower
-// than a full-size phone photo. Auto-orient first (WhatsApp EXIF rotation).
-async function downscaleForOcr(bytes: Buffer): Promise<Buffer> {
+const ALLOWED_MEDIA = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+type AllowedMedia = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+function normalizeMediaType(mediaType: string): AllowedMedia {
+  const t = mediaType.toLowerCase();
+  return ALLOWED_MEDIA.has(t) ? (t as AllowedMedia) : "image/jpeg";
+}
+
+/**
+ * Prepare the image for Claude. Tries to downscale to ~1568px via sharp (~3x
+ * fewer image tokens). sharp is loaded dynamically and any failure (e.g. the
+ * native binary missing on a serverless runtime) falls back to the original
+ * bytes — it must never crash ingestion.
+ */
+async function prepImage(
+  bytes: Buffer,
+  mediaType: string,
+): Promise<{ data: string; media_type: AllowedMedia }> {
   try {
-    return await sharp(bytes)
+    const sharp = (await import("sharp")).default;
+    const out = await sharp(bytes)
       .rotate()
       .resize({ width: 1568, height: 1568, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 82 })
       .toBuffer();
+    return { data: out.toString("base64"), media_type: "image/jpeg" };
   } catch {
-    return bytes; // if sharp can't handle it, fall back to the original
+    return { data: bytes.toString("base64"), media_type: normalizeMediaType(mediaType) };
   }
 }
 
@@ -71,7 +92,7 @@ const client = new Anthropic();
 export async function parseReceipt(
   input: ConnectorInput,
 ): Promise<ParsedReceipt> {
-  const jpeg = await downscaleForOcr(input.imageBytes);
+  const img = await prepImage(input.imageBytes, input.mediaType);
   const res = await client.messages.parse({
     model: process.env.PARSER_MODEL ?? "claude-opus-4-8",
     max_tokens: 400,
@@ -84,8 +105,8 @@ export async function parseReceipt(
             type: "image",
             source: {
               type: "base64",
-              media_type: "image/jpeg",
-              data: jpeg.toString("base64"),
+              media_type: img.media_type,
+              data: img.data,
             },
           },
           { type: "text", text: PARSE_PROMPT },
