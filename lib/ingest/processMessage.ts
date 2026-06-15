@@ -85,18 +85,25 @@ async function handleImage(
   }
 
   if (match.kind === "ambiguous") {
-    // Hold the parsed receipt + image and ask which store (resolved by text reply).
-    await setPending(msg.from, "pick_business", {
-      receipt: parsed,
-      imageUrl,
-      candidates: match.options,
-    });
-    const list = match.options.map((o, i) => `${i + 1}) ${o.name}`).join("\n");
+    // Uber/Skip summaries don't show a store. Use the active "store mode" (set by
+    // texting a store name) if one is set; otherwise ask the owner to set it.
+    const mode = await getPending(msg.from, "store_mode");
+    if (mode) {
+      const businessId = mode.options.businessId as string;
+      const businessName = mode.options.businessName as string;
+      const status = await upsertReceipt(supabase, businessId, parsed, imageUrl);
+      await sendText(msg.from, confirmationText(businessName, parsed, status));
+      await mark(supabase, msg.id, "processed");
+      return;
+    }
+    const hint = match.options
+      .map((o) => `"${o.name.replace(/^pizzaville\s+/i, "").toLowerCase()}"`)
+      .join(" or ");
     await sendText(
       msg.from,
-      `Which store is this for? Reply with the number:\n${list}\n\nTip: next time add a caption to the photo (e.g. "heartland" or "woodbine") and it'll route automatically.`,
+      `This receipt doesn't show a store (Uber/Skip). Text ${hint} first, then resend — everything after that files under that store until you switch.`,
     );
-    await mark(supabase, msg.id, "awaiting_store_pick");
+    await mark(supabase, msg.id, "awaiting_store_mode");
     return;
   }
 
@@ -114,30 +121,10 @@ async function handleText(
   userId: string,
   body: string,
 ): Promise<void> {
-  const pending = await getPending(msg.from);
-
-  // 1. Resolving a "which store?" prompt.
-  if (pending?.action === "pick_business") {
-    const candidates = (pending.options.candidates ?? []) as { id: string; name: string }[];
-    const idx = Number(body.replace(/[^0-9]/g, "")) - 1;
-    if (!Number.isInteger(idx) || idx < 0 || idx >= candidates.length) {
-      await sendText(msg.from, `Please reply with a number between 1 and ${candidates.length}.`);
-      await mark(supabase, msg.id, "awaiting_store_pick");
-      return;
-    }
-    const chosen = candidates[idx];
-    const receipt = pending.options.receipt as ParsedReceipt;
-    const imageUrl = (pending.options.imageUrl as string | undefined) ?? null;
-    const status = await upsertReceipt(supabase, chosen.id, receipt, imageUrl);
-    await clearPending(msg.from);
-    await sendText(msg.from, confirmationText(chosen.name, receipt, status));
-    await mark(supabase, msg.id, "store_picked");
-    return;
-  }
-
   const upper = body.toUpperCase();
+  const editPending = await getPending(msg.from, "edit");
 
-  // 2. "EDIT" — start, or apply inline "EDIT in_store 950".
+  // 1. "EDIT" — start, or apply inline "EDIT in_store 950".
   if (upper === "EDIT" || upper.startsWith("EDIT ")) {
     const rest = body.slice(4).trim();
     const parsedEdit = parseChannelAmount(rest);
@@ -159,25 +146,47 @@ async function handleText(
     return;
   }
 
-  // 3. Continuing an EDIT.
-  if (pending?.action === "edit") {
-    const parsedEdit = parseChannelAmount(body);
-    if (!parsedEdit) {
-      await sendText(msg.from, `Format: <channel> <amount> — e.g. "in_store 950".`);
-      await mark(supabase, msg.id, "edit_retry");
-      return;
-    }
-    const businessId = pending.options.businessId as string;
-    const entryDate = pending.options.entryDate as string;
-    await applyCorrection(supabase, businessId, entryDate, parsedEdit.channel, parsedEdit.amount);
-    await clearPending(msg.from);
-    await sendText(msg.from, `Updated ✅ ${CHANNEL_LABEL[parsedEdit.channel]} ${entryDate} = $${parsedEdit.amount.toFixed(2)}`);
+  // 2. A "<channel> <amount>" reply continues an active EDIT.
+  const ca = parseChannelAmount(body);
+  if (editPending && ca) {
+    const businessId = editPending.options.businessId as string;
+    const entryDate = editPending.options.entryDate as string;
+    await applyCorrection(supabase, businessId, entryDate, ca.channel, ca.amount);
+    await clearPending(msg.from, "edit");
+    await sendText(msg.from, `Updated ✅ ${CHANNEL_LABEL[ca.channel]} ${entryDate} = $${ca.amount.toFixed(2)}`);
     await mark(supabase, msg.id, "edited");
     return;
   }
 
-  // 4. Anything else.
-  await sendText(msg.from, "Send a photo of the daily receipt, or reply EDIT to fix the last one.");
+  // 3. A store name sets "store mode" — Uber/Skip receipts file there until changed.
+  const storeMatch = await matchBusiness(userId, body);
+  if (storeMatch.kind === "matched") {
+    await setPending(
+      msg.from,
+      "store_mode",
+      { businessId: storeMatch.businessId, businessName: storeMatch.businessName },
+      8 * 60 * 60 * 1000,
+    );
+    await sendText(
+      msg.from,
+      `📍 Filing Uber/Skip receipts under ${storeMatch.businessName} now. Send them — text the other store to switch. (Pizzaville receipts auto-route by their store number.)`,
+    );
+    await mark(supabase, msg.id, "store_mode_set");
+    return;
+  }
+
+  // 4. Active edit but the reply wasn't a valid "<channel> <amount>".
+  if (editPending) {
+    await sendText(msg.from, `Format: <channel> <amount> — e.g. "in_store 950".`);
+    await mark(supabase, msg.id, "edit_retry");
+    return;
+  }
+
+  // 5. Anything else.
+  await sendText(
+    msg.from,
+    `Send a receipt photo. For Uber/Skip, text "heartland" or "woodbine" first to set the store. Reply EDIT to fix the last entry.`,
+  );
   await mark(supabase, msg.id, "ignored_text");
 }
 
