@@ -70,7 +70,13 @@ async function handleImage(
   const imageUrl = await storeReceiptImage(bytes, mediaType, msg.id);
   const parsed = await whatsappImageConnector.parse({ imageBytes: bytes, mediaType });
 
-  const match = await matchBusiness(userId, parsed.business_identifier);
+  // Pizzaville receipts carry a store number; Uber/Skip summaries don't, so also
+  // use the photo's caption (e.g. "heartland") as a store hint for matching.
+  const caption = msg.image?.caption ?? "";
+  const match = await matchBusiness(
+    userId,
+    `${parsed.business_identifier} ${caption}`.trim(),
+  );
 
   if (match.kind === "none") {
     await sendText(msg.from, "No business is set up yet. Add one in Simplify2, then resend the receipt.");
@@ -86,7 +92,10 @@ async function handleImage(
       candidates: match.options,
     });
     const list = match.options.map((o, i) => `${i + 1}) ${o.name}`).join("\n");
-    await sendText(msg.from, `Which store is this for? Reply with a number:\n${list}`);
+    await sendText(
+      msg.from,
+      `Which store is this for? Reply with the number:\n${list}\n\nTip: next time add a caption to the photo (e.g. "heartland" or "woodbine") and it'll route automatically.`,
+    );
     await mark(supabase, msg.id, "awaiting_store_pick");
     return;
   }
